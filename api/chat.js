@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   const folderId = process.env.YANDEX_FOLDER_ID;
 
   if (!apiKey || !folderId) {
-    return res.status(500).json({ error: 'Yandex API key or folder ID not configured' });
+    return res.status(500).json({ error: 'API key or folder ID not configured' });
   }
 
   try {
@@ -20,7 +20,7 @@ export default async function handler(req, res) {
       { role: 'system', text: system },
       ...messages.map(m => ({
         role: m.role === 'assistant' ? 'assistant' : 'user',
-        text: m.content
+        text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
       }))
     ];
 
@@ -36,23 +36,30 @@ export default async function handler(req, res) {
         completionOptions: {
           stream: false,
           temperature: 0.3,
-          maxTokens: 1500
+          maxTokens: "1500"
         },
         messages: yandexMessages
       })
     });
 
-    const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json({ 
-        error: data.message || data.error || 'YandexGPT API error' 
-      });
+    const rawText = await response.text();
+    
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch(e) {
+      return res.status(500).json({ error: 'Invalid JSON from Yandex: ' + rawText.slice(0, 200) });
     }
 
-    const text = data.result?.alternatives?.[0]?.message?.text || 'Не удалось получить ответ.';
+    if (!response.ok) {
+      const errMsg = data?.message || data?.error?.message || data?.error || rawText.slice(0, 200);
+      return res.status(response.status).json({ error: errMsg });
+    }
+
+    const text = data?.result?.alternatives?.[0]?.message?.text || 'Не удалось получить ответ.';
     return res.status(200).json({ content: [{ type: 'text', text }] });
 
   } catch (error) {
-    return res.status(500).json({ error: 'Server error: ' + error.message });
+    return res.status(500).json({ error: error.message });
   }
 }
