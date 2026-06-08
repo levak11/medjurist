@@ -1,47 +1,56 @@
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  const apiKey = process.env.YANDEX_API_KEY;
+  const folderId = process.env.YANDEX_FOLDER_ID;
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: 'API key not configured' });
+  if (!apiKey || !folderId) {
+    return res.status(500).json({ error: 'Yandex API key or folder ID not configured' });
   }
 
   try {
     const { messages, system } = req.body;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const yandexMessages = [
+      { role: 'system', text: system },
+      ...messages.map(m => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        text: m.content
+      }))
+    ];
+
+    const response = await fetch('https://llm.api.cloud.yandex.net/foundationModels/v1/completion', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        'Authorization': `Api-Key ${apiKey}`,
+        'x-folder-id': folderId
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-5',
-        max_tokens: 1500,
-        system,
-        messages
+        modelUri: `gpt://${folderId}/yandexgpt/latest`,
+        completionOptions: {
+          stream: false,
+          temperature: 0.3,
+          maxTokens: 1500
+        },
+        messages: yandexMessages
       })
     });
 
     const data = await response.json();
-
     if (!response.ok) {
-      return res.status(response.status).json({ error: data.error?.message || 'Anthropic API error' });
+      return res.status(response.status).json({ 
+        error: data.message || data.error || 'YandexGPT API error' 
+      });
     }
 
-    return res.status(200).json(data);
+    const text = data.result?.alternatives?.[0]?.message?.text || 'Не удалось получить ответ.';
+    return res.status(200).json({ content: [{ type: 'text', text }] });
 
   } catch (error) {
     return res.status(500).json({ error: 'Server error: ' + error.message });
