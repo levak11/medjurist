@@ -9,51 +9,34 @@ export default async function handler(req, res) {
   const apiKey = process.env.YANDEX_API_KEY;
   const assistantId = 'fvt9juq9gm5ah5rpn3t8';
   const folderId = process.env.YANDEX_FOLDER_ID;
-
   if (!apiKey) return res.status(500).json({ error: 'API key not configured' });
 
   const BASE = 'https://rest-assistant.api.cloud.yandex.net/assistants/v1';
-  const hdrs = {
-    'Content-Type': 'application/json',
-    'Authorization': `Api-Key ${apiKey}`
-  };
+  const hdrs = { 'Content-Type': 'application/json', 'Authorization': `Api-Key ${apiKey}` };
 
-  async function req_yandex(method, path, body) {
+  // Парсим NDJSON — берём первую непустую строку с JSON
+  async function yandex(method, path, body) {
     const r = await fetch(`${BASE}/${path}`, {
-      method,
-      headers: hdrs,
+      method, headers: hdrs,
       body: body ? JSON.stringify(body) : undefined
     });
     const text = await r.text();
-    // Берём первый JSON объект из ответа
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('No JSON in response: ' + text.slice(0, 200));
-    return JSON.parse(match[0]);
+    const lines = text.split('\n').filter(l => l.trim().startsWith('{'));
+    if (!lines.length) throw new Error('No JSON lines: ' + text.slice(0, 200));
+    return JSON.parse(lines[0]);
   }
 
-  // Рекурсивно ищем текст в любой структуре
-  function extractText(obj) {
-    if (!obj) return null;
-    if (typeof obj === 'string') return obj;
+  // Рекурсивно ищем строку в любой вложенной структуре
+  function findText(obj, depth = 0) {
+    if (depth > 10 || !obj) return null;
+    if (typeof obj === 'string' && obj.length > 5) return obj;
     if (Array.isArray(obj)) {
-      for (const item of obj) {
-        const t = extractText(item);
-        if (t) return t;
-      }
+      for (const item of obj) { const t = findText(item, depth+1); if (t) return t; }
     }
     if (typeof obj === 'object') {
-      // Прямые поля с текстом
-      if (obj.text && typeof obj.text === 'string') return obj.text;
-      if (obj.content && typeof obj.content === 'string') return obj.content;
-      // Вложенные структуры Яндекса
-      if (obj.text?.content) return obj.text.content;
-      if (obj.content?.content) return extractText(obj.content.content);
-      // Перебираем все поля
-      for (const key of ['text', 'content', 'message', 'parts', 'blocks']) {
-        if (obj[key]) {
-          const t = extractText(obj[key]);
-          if (t) return t;
-        }
+      for (const key of ['text', 'content', 'value', 'message', 'result']) {
+        const t = findText(obj[key], depth+1);
+        if (t) return t;
       }
     }
     return null;
@@ -63,59 +46,53 @@ export default async function handler(req, res) {
     const { messages } = req.body;
     const lastMessage = messages[messages.length - 1].content;
 
-    // 1. Создаём тред
-    const thread = await req_yandex('POST', 'threads', { folderId });
+    // 1. Тред
+    const thread = await yandex('POST', 'threads', { folderId });
     const threadId = thread.id;
-    if (!threadId) throw new Error('No thread id: ' + JSON.stringify(thread));
+    if (!threadId) throw new Error('No threadId: ' + JSON.stringify(thread));
 
-    // 2. Отправляем сообщение
-    await req_yandex('POST', 'messages', {
+    // 2. Сообщение
+    await yandex('POST', 'messages', {
       threadId,
       content: { content: [{ text: { content: lastMessage } }] },
       role: 'USER'
     });
 
-    // 3. Запускаем агента
-    const run = await req_yandex('POST', 'runs', { threadId, assistantId });
+    // 3. Запуск
+    const run = await yandex('POST', 'runs', { threadId, assistantId });
     const runId = run.id;
-    if (!runId) throw new Error('No run id: ' + JSON.stringify(run));
+    if (!runId) throw new Error('No runId: ' + JSON.stringify(run));
 
-    // 4. Ждём завершения
+    // 4. Ждём
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 2000));
-      const status = await req_yandex('GET', `runs/${runId}`);
+      const status = await yandex('GET', `runs/${runId}`);
       const st = status?.state?.status || status?.status;
 
       if (st === 'COMPLETED' || st === 'DONE') {
-        // 5. Получаем все сообщения треда
-        const msgsData = await req_yandex('GET', `messages?threadId=${threadId}&pageSize=20`);
-        
-        // Возвращаем сырой ответ для диагностики если не нашли текст
+        // 5. Получаем сообщения
+        const msgsData = await yandex('GET', `messages?threadId=${threadId}&pageSize=20`);
         const allMsgs = msgsData.messages || msgsData.items || [];
-        
-        // Ищем сообщение ассистента
-        const assistantMsg = allMsgs.find(m => 
-          m.author?.role === 'ASSISTANT' || 
-          m.role === 'ASSISTANT' ||
-          m.author?.role === 'assistant' ||
-          m.role === 'assistant'
+
+        const assistantMsg = allMsgs.find(m =>
+          (m.author?.role || m.role || '').toUpperCase() === 'ASSISTANT'
         );
 
         if (!assistantMsg) {
-          // Отдаём полный ответ для диагностики
-          return res.status(200).json({ 
-            content: [{ type: 'text', text: 'DEBUG: ' + JSON.stringify(msgsData).slice(0, 500) }] 
+          return res.status(200).json({
+            content: [{ type: 'text', text: 'DEBUG msgs: ' + JSON.stringify(msgsData).slice(0, 600) }]
           });
         }
 
-        const text = extractText(assistantMsg) || 
-                     'Ответ получен, структура: ' + JSON.stringify(assistantMsg).slice(0, 300);
+        const text = findText(assistantMsg.content)
+                  || findText(assistantMsg)
+                  || 'DEBUG структура: ' + JSON.stringify(assistantMsg).slice(0, 400);
 
         return res.status(200).json({ content: [{ type: 'text', text }] });
       }
 
-      if (st === 'FAILED' || st === 'CANCELLED' || st === 'ERROR') {
-        return res.status(500).json({ error: 'Run failed: ' + st });
+      if (['FAILED','CANCELLED','ERROR'].includes(st)) {
+        return res.status(500).json({ error: 'Run status: ' + st });
       }
     }
 
