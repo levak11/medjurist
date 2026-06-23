@@ -13,7 +13,6 @@ export default async function handler(req, res) {
     const { messages, system } = req.body;
     const userText = messages[messages.length - 1].content;
 
-    // Responses API — новый стандарт Яндекса (совместим с OpenAI)
     const response = await fetch('https://rest-assistant.api.cloud.yandex.net/v1/responses', {
       method: 'POST',
       headers: {
@@ -22,7 +21,7 @@ export default async function handler(req, res) {
         'x-folder-id': folderId
       },
       body: JSON.stringify({
-        model: `gpt://${folderId}/yandexgpt-pro/latest`,
+        model: `gpt://${folderId}/yandexgpt-pro`,
         instructions: system,
         input: [{ role: 'user', content: userText }],
         temperature: 0.2,
@@ -36,9 +35,8 @@ export default async function handler(req, res) {
     try { data = JSON.parse(raw); }
     catch(e) { throw new Error('JSON error: ' + raw.slice(0, 300)); }
 
-    if (!response.ok) throw new Error(data?.message || data?.error || raw.slice(0, 200));
+    if (!response.ok) throw new Error(data?.error?.message || data?.message || raw.slice(0, 200));
 
-    // Структура Responses API
     const text = data?.output_text
               || data?.output?.[0]?.content?.[0]?.text
               || data?.output?.[0]?.text
