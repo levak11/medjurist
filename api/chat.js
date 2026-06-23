@@ -19,7 +19,6 @@ export default async function handler(req, res) {
       body: body ? JSON.stringify(body) : undefined
     });
     const raw = await r.text();
-    // NDJSON — берём первую строку
     const line = raw.split('\n').find(l => l.trim().startsWith('{'));
     if (!line) throw new Error('No JSON: ' + raw.slice(0, 200));
     return JSON.parse(line);
@@ -29,41 +28,40 @@ export default async function handler(req, res) {
     const { messages } = req.body;
     const userText = messages[messages.length - 1].content;
 
-    // 1. Создаём тред
     const thread = await api('POST', 'threads', { folderId });
     if (!thread.id) throw new Error('No thread: ' + JSON.stringify(thread));
 
-    // 2. Отправляем сообщение пользователя
     await api('POST', 'messages', {
       threadId: thread.id,
       content: { content: [{ text: { content: userText } }] },
       role: 'USER'
     });
 
-    // 3. Запускаем агента
     const run = await api('POST', 'runs', { threadId: thread.id, assistantId });
     if (!run.id) throw new Error('No run: ' + JSON.stringify(run));
 
-    // 4. Ждём завершения — poll каждые 2 сек, до 60 сек
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 2000));
       const status = await api('GET', `runs/${run.id}`);
       const st = (status?.state?.status || status?.status || '').toUpperCase();
 
       if (st === 'COMPLETED' || st === 'DONE') {
-        // 5. Получаем сообщения треда
         const data = await api('GET', `messages?threadId=${thread.id}&pageSize=20`);
         const msgs = data.messages || data.items || [];
 
-        // Ищем сообщение ассистента по author.role
-        const msg = msgs.find(m => m.author?.role === 'ASSISTANT');
-        if (!msg) throw new Error('No assistant message');
+        // Берём ПОСЛЕДНЕЕ сообщение — оно и есть ответ ассистента
+        const msg = msgs[0];
+        if (!msg) throw new Error('No messages at all');
 
-        // Точная структура Яндекса: content.content[0].text.content
+        // Пробуем все возможные пути к тексту
         const text = msg?.content?.content?.[0]?.text?.content
                   || msg?.content?.[0]?.text?.content
                   || msg?.content?.[0]?.text
-                  || JSON.stringify(msg?.content).slice(0, 500);
+                  || msg?.content?.text?.content
+                  || msg?.content?.text
+                  || msg?.text?.content
+                  || msg?.text
+                  || 'Структура: ' + JSON.stringify(msg).slice(0, 600);
 
         return res.status(200).json({ content: [{ type: 'text', text }] });
       }
