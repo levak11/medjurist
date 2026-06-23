@@ -7,71 +7,45 @@ export default async function handler(req, res) {
 
   const apiKey = process.env.YANDEX_API_KEY;
   const folderId = process.env.YANDEX_FOLDER_ID;
-  const assistantId = 'fvt9juq9gm5ah5rpn3t8';
   if (!apiKey || !folderId) return res.status(500).json({ error: 'API key not configured' });
 
-  const BASE = 'https://rest-assistant.api.cloud.yandex.net/assistants/v1';
-  const H = { 'Content-Type': 'application/json', 'Authorization': `Api-Key ${apiKey}` };
-
-  async function api(method, path, body) {
-    const r = await fetch(`${BASE}/${path}`, {
-      method, headers: H,
-      body: body ? JSON.stringify(body) : undefined
-    });
-    const raw = await r.text();
-    const line = raw.split('\n').find(l => l.trim().startsWith('{'));
-    if (!line) throw new Error('No JSON: ' + raw.slice(0, 200));
-    return JSON.parse(line);
-  }
-
   try {
-    const { messages } = req.body;
+    const { messages, system } = req.body;
     const userText = messages[messages.length - 1].content;
 
-    const thread = await api('POST', 'threads', { folderId });
-    if (!thread.id) throw new Error('No thread: ' + JSON.stringify(thread));
-
-    await api('POST', 'messages', {
-      threadId: thread.id,
-      content: { content: [{ text: { content: userText } }] },
-      role: 'USER'
+    // Responses API — новый стандарт Яндекса (совместим с OpenAI)
+    const response = await fetch('https://rest-assistant.api.cloud.yandex.net/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Api-Key ${apiKey}`,
+        'x-folder-id': folderId
+      },
+      body: JSON.stringify({
+        model: `gpt://${folderId}/yandexgpt-pro/latest`,
+        instructions: system,
+        input: [{ role: 'user', content: userText }],
+        temperature: 0.2,
+        max_output_tokens: 2000,
+        tools: [{ type: 'web_search' }]
+      })
     });
 
-    const run = await api('POST', 'runs', { threadId: thread.id, assistantId });
-    if (!run.id) throw new Error('No run: ' + JSON.stringify(run));
+    const raw = await response.text();
+    let data;
+    try { data = JSON.parse(raw); }
+    catch(e) { throw new Error('JSON error: ' + raw.slice(0, 300)); }
 
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-      const status = await api('GET', `runs/${run.id}`);
-      const st = (status?.state?.status || status?.status || '').toUpperCase();
+    if (!response.ok) throw new Error(data?.message || data?.error || raw.slice(0, 200));
 
-      if (st === 'COMPLETED' || st === 'DONE') {
-        const data = await api('GET', `messages?threadId=${thread.id}&pageSize=20`);
-        const msgs = data.messages || data.items || [];
+    // Структура Responses API
+    const text = data?.output_text
+              || data?.output?.[0]?.content?.[0]?.text
+              || data?.output?.[0]?.text
+              || data?.choices?.[0]?.message?.content
+              || JSON.stringify(data).slice(0, 500);
 
-        // Берём ПОСЛЕДНЕЕ сообщение — оно и есть ответ ассистента
-        const msg = msgs[0];
-        if (!msg) throw new Error('No messages at all');
-
-        // Пробуем все возможные пути к тексту
-        const text = msg?.content?.content?.[0]?.text?.content
-                  || msg?.content?.[0]?.text?.content
-                  || msg?.content?.[0]?.text
-                  || msg?.content?.text?.content
-                  || msg?.content?.text
-                  || msg?.text?.content
-                  || msg?.text
-                  || 'Структура: ' + JSON.stringify(msg).slice(0, 600);
-
-        return res.status(200).json({ content: [{ type: 'text', text }] });
-      }
-
-      if (['FAILED', 'CANCELLED', 'ERROR'].includes(st)) {
-        throw new Error('Run failed: ' + st);
-      }
-    }
-
-    throw new Error('Timeout 60 сек');
+    return res.status(200).json({ content: [{ type: 'text', text }] });
 
   } catch (e) {
     return res.status(500).json({ error: e.message });
