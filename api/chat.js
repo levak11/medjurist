@@ -13,7 +13,7 @@ export default async function handler(req, res) {
     const { messages, system } = req.body;
     const userText = messages[messages.length - 1].content;
 
-    const response = await fetch('https://rest-assistant.api.cloud.yandex.net/v1/responses', {
+    const response = await fetch('https://ai.api.cloud.yandex.net/v1/responses', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -21,12 +21,11 @@ export default async function handler(req, res) {
         'x-folder-id': folderId
       },
       body: JSON.stringify({
-        model: `gpt://${folderId}/yandexgpt-pro`,
+        model: `gpt://${folderId}/aliceai-llm`,
         instructions: system,
-        input: [{ role: 'user', content: userText }],
+        input: userText,
         temperature: 0.2,
-        max_output_tokens: 2000,
-        tools: [{ type: 'web_search' }]
+        max_output_tokens: 2000
       })
     });
 
@@ -40,7 +39,6 @@ export default async function handler(req, res) {
     const text = data?.output_text
               || data?.output?.[0]?.content?.[0]?.text
               || data?.output?.[0]?.text
-              || data?.choices?.[0]?.message?.content
               || JSON.stringify(data).slice(0, 500);
 
     return res.status(200).json({ content: [{ type: 'text', text }] });
