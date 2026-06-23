@@ -2,7 +2,6 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -14,91 +13,73 @@ export default async function handler(req, res) {
   const BASE = 'https://rest-assistant.api.cloud.yandex.net/assistants/v1';
   const hdrs = { 'Content-Type': 'application/json', 'Authorization': `Api-Key ${apiKey}` };
 
-  // Парсим NDJSON — берём первую непустую строку с JSON
   async function yandex(method, path, body) {
     const r = await fetch(`${BASE}/${path}`, {
       method, headers: hdrs,
       body: body ? JSON.stringify(body) : undefined
     });
-    const text = await r.text();
-    const lines = text.split('\n').filter(l => l.trim().startsWith('{'));
-    if (!lines.length) throw new Error('No JSON lines: ' + text.slice(0, 200));
-    return JSON.parse(lines[0]);
-  }
-
-  // Рекурсивно ищем строку в любой вложенной структуре
-  function findText(obj, depth = 0) {
-    if (depth > 10 || !obj) return null;
-    if (typeof obj === 'string' && obj.length > 5) return obj;
-    if (Array.isArray(obj)) {
-      for (const item of obj) { const t = findText(item, depth+1); if (t) return t; }
-    }
-    if (typeof obj === 'object') {
-      for (const key of ['text', 'content', 'value', 'message', 'result']) {
-        const t = findText(obj[key], depth+1);
-        if (t) return t;
-      }
-    }
-    return null;
+    const raw = await r.text();
+    // NDJSON — берём первую строку с JSON
+    const firstLine = raw.split('\n').find(l => l.trim().startsWith('{'));
+    if (!firstLine) throw new Error('No JSON: ' + raw.slice(0, 200));
+    return JSON.parse(firstLine);
   }
 
   try {
     const { messages } = req.body;
-    const lastMessage = messages[messages.length - 1].content;
+    const userText = messages[messages.length - 1].content;
 
     // 1. Тред
     const thread = await yandex('POST', 'threads', { folderId });
-    const threadId = thread.id;
-    if (!threadId) throw new Error('No threadId: ' + JSON.stringify(thread));
+    if (!thread.id) throw new Error('No thread: ' + JSON.stringify(thread));
 
     // 2. Сообщение
     await yandex('POST', 'messages', {
-      threadId,
-      content: { content: [{ text: { content: lastMessage } }] },
+      threadId: thread.id,
+      content: { content: [{ text: { content: userText } }] },
       role: 'USER'
     });
 
-    // 3. Запуск
-    const run = await yandex('POST', 'runs', { threadId, assistantId });
-    const runId = run.id;
-    if (!runId) throw new Error('No runId: ' + JSON.stringify(run));
+    // 3. Запуск агента
+    const run = await yandex('POST', 'runs', { threadId: thread.id, assistantId });
+    if (!run.id) throw new Error('No run: ' + JSON.stringify(run));
 
-    // 4. Ждём
+    // 4. Ждём завершения
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 2000));
-      const status = await yandex('GET', `runs/${runId}`);
-      const st = status?.state?.status || status?.status;
+      const status = await yandex('GET', `runs/${run.id}`);
+      const st = (status?.state?.status || status?.status || '').toUpperCase();
 
       if (st === 'COMPLETED' || st === 'DONE') {
         // 5. Получаем сообщения
-        const msgsData = await yandex('GET', `messages?threadId=${threadId}&pageSize=20`);
-        const allMsgs = msgsData.messages || msgsData.items || [];
+        const data = await yandex('GET', `messages?threadId=${thread.id}&pageSize=20`);
+        const msgs = data.messages || data.items || [];
 
-        const assistantMsg = allMsgs.find(m =>
+        // Ищем сообщение ассистента
+        const msg = msgs.find(m =>
           (m.author?.role || m.role || '').toUpperCase() === 'ASSISTANT'
         );
 
-        if (!assistantMsg) {
-          return res.status(200).json({
-            content: [{ type: 'text', text: 'DEBUG msgs: ' + JSON.stringify(msgsData).slice(0, 600) }]
-          });
-        }
+        if (!msg) throw new Error('No assistant message found');
 
-        const text = findText(assistantMsg.content)
-                  || findText(assistantMsg)
-                  || 'DEBUG структура: ' + JSON.stringify(assistantMsg).slice(0, 400);
+        // Структура Яндекса: content.content[0].text.content
+        const text = msg?.content?.content?.[0]?.text?.content
+                  || msg?.content?.[0]?.text?.content
+                  || msg?.content?.[0]?.text
+                  || msg?.content?.text
+                  || JSON.stringify(msg?.content).slice(0, 500);
 
         return res.status(200).json({ content: [{ type: 'text', text }] });
       }
 
       if (['FAILED','CANCELLED','ERROR'].includes(st)) {
-        return res.status(500).json({ error: 'Run status: ' + st });
+        throw new Error('Run failed: ' + st);
       }
     }
 
-    return res.status(500).json({ error: 'Timeout 60 сек' });
+    throw new Error('Timeout 60 сек');
 
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
   }
 }
