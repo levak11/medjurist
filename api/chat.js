@@ -7,11 +7,19 @@ export default async function handler(req, res) {
 
   const apiKey = process.env.YANDEX_API_KEY;
   const folderId = process.env.YANDEX_FOLDER_ID;
+  const assistantId = 'fvt9juq9gm5ah5rpn3t8';
   if (!apiKey || !folderId) return res.status(500).json({ error: 'API key not configured' });
 
   try {
     const { messages, system } = req.body;
     const userText = messages[messages.length - 1].content;
+
+    const body = {
+      assistant_id: assistantId,
+      input: userText,
+      max_output_tokens: 2000,
+      temperature: 0.2
+    };
 
     const response = await fetch('https://ai.api.cloud.yandex.net/v1/responses', {
       method: 'POST',
@@ -20,13 +28,7 @@ export default async function handler(req, res) {
         'Authorization': `Api-Key ${apiKey}`,
         'x-folder-id': folderId
       },
-      body: JSON.stringify({
-        model: `gpt://${folderId}/aliceai-llm`,
-        instructions: system,
-        input: userText,
-        temperature: 0.2,
-        max_output_tokens: 2000
-      })
+      body: JSON.stringify(body)
     });
 
     const raw = await response.text();
