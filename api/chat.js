@@ -14,13 +14,6 @@ export default async function handler(req, res) {
     const { messages, system } = req.body;
     const userText = messages[messages.length - 1].content;
 
-    const body = {
-      assistant_id: assistantId,
-      input: userText,
-      max_output_tokens: 2000,
-      temperature: 0.2
-    };
-
     const response = await fetch('https://ai.api.cloud.yandex.net/v1/responses', {
       method: 'POST',
       headers: {
@@ -28,7 +21,13 @@ export default async function handler(req, res) {
         'Authorization': `Api-Key ${apiKey}`,
         'x-folder-id': folderId
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify({
+        model: `gpt://${folderId}/aliceai-llm`,
+        assistant_id: assistantId,
+        input: userText,
+        max_output_tokens: 2000,
+        temperature: 0.2
+      })
     });
 
     const raw = await response.text();
