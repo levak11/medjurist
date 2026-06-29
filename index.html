@@ -337,7 +337,7 @@ async function sendMsg() {
   setLoading(true);
   try {
     const system = SYSTEM.replace('SPEC_PLACEHOLDER', spec);
-    const res = await fetch('/api/chat', {
+    const res = await fetch('https://functions.yandexcloud.net/d4euit7i0gs6v1lbi78c', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ system: system, messages: history })
