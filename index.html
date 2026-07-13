@@ -340,7 +340,7 @@ async function sendMsg() {
     const res = await fetch('https://functions.yandexcloud.net/d4euit7i0gs6v1lbi78c', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ system: system, messages: history })
+      body: JSON.stringify({ spec: spec, messages: history })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Ошибка сервера');
